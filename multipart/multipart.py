@@ -9,6 +9,7 @@ import logging
 import tempfile
 from io import BytesIO
 from numbers import Number
+from email.message import Message
 
 # Unique missing object.
 _missing = object()
@@ -81,38 +82,39 @@ def parse_options_header(value):
     Parses a Content-Type header into a value in the following format:
         (content_type, {parameters})
     """
+    # Uses email.message.Message to parse the header as described in PEP 594.
+    # Ref: https://peps.python.org/pep-0594/#cgi
     if not value:
         return (b'', {})
 
-    # If we are passed a string, we assume that it conforms to WSGI and does
-    # not contain any code point that's not in latin-1.
-    if isinstance(value, str):            # pragma: no cover
-        value = value.encode('latin-1')
+    # If we are passed bytes, we assume that it conforms to WSGI, encoding in latin-1.
+    if isinstance(value, bytes):  # pragma: no cover
+        value = value.decode('latin-1')
+
+    # For types
+    assert isinstance(value, str), 'Value should be a string by now'
 
     # If we have no options, return the string as-is.
-    if b';' not in value:
-        return (value.lower().strip(), {})
+    if ';' not in value:
+        return (value.lower().strip().encode('latin-1'), {})
 
     # Split at the first semicolon, to get our value and then options.
-    ctype, rest = value.split(b';', 1)
+    # ctype, rest = value.split(b';', 1)
+    message = Message()
+    message['content-type'] = value
+    params = message.get_params()
+    # If there were no parameters, this would have already returned above
+    assert params, 'At least the content type value should be present'
+    ctype = params.pop(0)[0].encode('latin-1')
     options = {}
-
-    # Parse the options.
-    for match in OPTION_RE.finditer(rest):
-        key = match.group(1).lower()
-        value = match.group(2)
-        if value[0] == QUOTE and value[-1] == QUOTE:
-            # Unquote the value.
-            value = value[1:-1]
-            value = value.replace(b'\\\\', b'\\').replace(b'\\"', b'"')
-
+    for param in params:
+        key, value = param
         # If the value is a filename, we need to fix a bug on IE6 that sends
         # the full file path instead of the filename.
-        if key == b'filename':
-            if value[1:3] == b':\\' or value[:2] == b'\\\\':
-                value = value.split(b'\\')[-1]
-
-        options[key] = value
+        if key == 'filename':
+            if value[1:3] == ':\\' or value[:2] == '\\\\':
+                value = value.split('\\')[-1]
+        options[key.encode('latin-1')] = value.encode('latin-1')
 
     return ctype, options
 
@@ -318,7 +320,9 @@ class File:
 
         # Split the extension from the filename.
         if file_name is not None:
-            base, ext = os.path.splitext(file_name)
+            # Extract just the basename to avoid directory traversal
+            basename = os.path.basename(file_name)
+            base, ext = os.path.splitext(basename)
             self._file_base = base
             self._ext = ext
 
@@ -1417,6 +1421,9 @@ class MultipartParser(BaseParser):
                     i -= 1
 
             elif state == STATE_END:
+                # Don't do anything if chunk ends with CRLF.
+                if c == CR and i + 1 < length and data[i + 1] == LF:
+                    i += 2
                 # Do nothing and just consume a byte in the end state.
                 if c not in (CR, LF):
                     self.logger.warning("Consuming a byte '0x%x' in the end state", c)

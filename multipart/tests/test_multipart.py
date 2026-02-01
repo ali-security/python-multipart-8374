@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import glob
@@ -14,6 +15,7 @@ from .compat import (
 from io import BytesIO
 from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 from ..multipart import *
 
 
@@ -272,6 +274,16 @@ class TestParseOptionsHeader(unittest.TestCase):
         t, p = parse_options_header(b'text/plain; filename="C:\\this\\is\\a\\path\\file.txt"')
 
         self.assertEqual(p[b'filename'], b'file.txt')
+
+    def test_cve_2024_24762(self):
+        # This is a test for CVE-2024-24762
+        # https://nvd.nist.gov/vuln/detail/CVE-2024-24762
+        import time
+
+        start_time = time.time()
+        parse_options_header('application/x-www-form-urlencoded; !="\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\')
+        end_time = time.time()
+        self.assertLess(end_time - start_time, 1.0)
 
 
 class TestBaseParser(unittest.TestCase):
@@ -1184,6 +1196,30 @@ class TestFormParser(unittest.TestCase):
 
         self.assertEqual(fields[2].field_name, b'baz')
         self.assertEqual(fields[2].value, b'asdf')
+
+    @pytest.fixture(autouse=True)
+    def inject_fixtures(self, caplog: pytest.LogCaptureFixture) -> None:
+        self._caplog = caplog
+
+    def test_multipart_parser_data_end_with_crlf_without_warnings(self) -> None:
+        """This test makes sure that the parser does not handle when the data ends with a CRLF."""
+        data = (
+            "--boundary\r\n"
+            'Content-Disposition: form-data; name="file"; filename="filename.txt"\r\n'
+            "Content-Type: text/plain\r\n\r\n"
+            "hello\r\n"
+            "--boundary--\r\n"
+        )
+
+        files: list[File] = []
+
+        def on_file(f):
+            files.append(f)
+
+        f = FormParser("multipart/form-data", on_field=Mock(), on_file=on_file, boundary="boundary")
+        with self._caplog.at_level(logging.WARNING):
+            f.write(data.encode("latin-1"))
+            assert len(self._caplog.records) == 0
 
     def test_max_size_multipart(self):
         # Load test data.
