@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from python-multipart.multipart import File
+from ..multipart import File
 
 
 def test_upload_dir_with_leading_slash_in_filename(tmp_path: Path):
